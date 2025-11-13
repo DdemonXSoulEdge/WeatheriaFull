@@ -95,55 +95,68 @@ export class HomeComponent implements OnInit {
     }
   }
 
-  /**
-   * Carga el JSON de pronóstico de días y lo mapea a hourlyForecast (mostrando días)
-   * Ruta: WeatheriaBackend/weatheria/pronostico_lluvia_queretaro.json
-   */
-  private loadPronosticoDias(): void {
-    this.http.get<any[]>('WeatheriaBackend/weatheria/pronostico_lluvia_queretaro.json').subscribe({
-      next: (data) => {
-        if (!Array.isArray(data) || data.length === 0) {
-          console.warn('⚠️ pronostico_lluvia_queretaro.json vacío o no es un arreglo.');
-          this.hourlyForecast = [];
-          return;
+  
+private loadPronosticoDias(): void {
+  this.http.get<any[]>('WeatheriaBackend/weatheria/pronostico_lluvia_queretaro.json').subscribe({
+    next: (data) => {
+      if (!Array.isArray(data) || data.length === 0) {
+        console.warn('Pronostico_lluvia_queretaro.json vacío o no es un arreglo.');
+        this.hourlyForecast = [];
+        return;
+      }
+
+      const hoy = new Date();
+      hoy.setHours(0, 0, 0, 0);
+
+      // ⚙️ Convertir manualmente las fechas del JSON a hora local (evita desfase UTC)
+      const pronosticosValidos = data
+        .map((dia) => {
+          const [year, month, day] = dia.fecha.split('-').map(Number);
+          const fechaLocal = new Date(year, month - 1, day, 0, 0, 0); // <-- local time
+          return { ...dia, fechaObj: fechaLocal };
+        })
+        .filter((d) => !isNaN(d.fechaObj.getTime()) && d.fechaObj >= hoy)
+        .sort((a, b) => a.fechaObj.getTime() - b.fechaObj.getTime());
+
+      if (pronosticosValidos.length === 0) {
+        console.warn('No hay pronósticos válidos para hoy o días futuros.');
+        this.hourlyForecast = [];
+        return;
+      }
+
+      this.hourlyForecast = pronosticosValidos.map((dia) => {
+        const dayName = dia.fechaObj.toLocaleDateString('es-ES', { weekday: 'short' }); // ej "mié"
+
+        let icon = '☁️';
+        if (dia.llovera_modelo === 1 || dia.llovera_modelo === true) {
+          icon = '🌧️';
+        } else {
+          const condicion = (dia.condicion || '').toString().toLowerCase();
+          if (condicion.includes('sunny') || condicion.includes('soleado')) {
+            icon = '☀️';
+          } else {
+            icon = '☁️';
+          }
         }
 
-        this.hourlyForecast = data.map((dia) => {
-          // dia.fecha esperado formato "YYYY-MM-DD"
-          const fechaObj = new Date(dia.fecha);
-          const dayName = fechaObj.toLocaleDateString('es-ES', { weekday: 'short' }); // ej "mié"
-          // Reglas de icono:
-          // llovera_modelo = 1 -> lluvia
-          // llovera_modelo = 0 && condicion contiene 'sunny' -> sol
-          // llovera_modelo = 0 && condicion != sunny -> nube
-          let icon = '☁️';
-          if (dia.llovera_modelo === 1 || dia.llovera_modelo === true) {
-            icon = '🌧️';
-          } else {
-            const condicion = (dia.condicion || '').toString().toLowerCase();
-            if (condicion.includes('sunny') || condicion.includes('soleado')) {
-              icon = '☀️';
-            } else {
-              icon = '☁️';
-            }
-          }
+        const tempLabel = (typeof dia.prob_lluvia_api === 'number')
+          ? `${dia.prob_lluvia_api}%`
+          : '—';
 
-          // temp: reutilizamos prob_lluvia_api para mostrar (según diseño previo)
-          const tempLabel = (typeof dia.prob_lluvia_api === 'number') ? `${dia.prob_lluvia_api}%` : '—';
+        return {
+          day: dayName.charAt(0).toUpperCase() + dayName.slice(1),
+          icon,
+          temp: tempLabel
+        } as HourlyWeather;
+      });
+    },
+    error: (err) => {
+      console.error('Error al cargar pronostico_lluvia_queretaro.json:', err);
+      this.hourlyForecast = [];
+    }
+  });
+}
 
-          return {
-            day: dayName.charAt(0).toUpperCase() + dayName.slice(1), // Ej: "Mié"
-            icon,
-            temp: tempLabel
-          } as HourlyWeather;
-        });
-      },
-      error: (err) => {
-        console.error('Error al cargar pronostico_lluvia_queretaro.json:', err);
-        this.hourlyForecast = [];
-      }
-    });
-  }
 
   /** Envía reporte de inundación (mantengo como antes) */
   reportFlood() {
