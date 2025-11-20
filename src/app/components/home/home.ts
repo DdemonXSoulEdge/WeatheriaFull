@@ -61,7 +61,6 @@ export class HomeComponent implements OnInit {
     });
   }
 
-  /** Carga datos desde registros.json (ruta relativa publicada por Angular assets o por config) */
   private loadWeatherData(): void {
     this.http.get<any[]>('WeatheriaBackend/weatheria/registros.json').subscribe({
       next: (data) => {

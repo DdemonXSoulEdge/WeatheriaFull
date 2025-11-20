@@ -1,4 +1,4 @@
-import { Component, OnInit, ViewChild, AfterViewInit, inject } from '@angular/core';
+import { Component, OnInit, AfterViewInit, ViewChild, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { Router } from '@angular/router';
@@ -30,42 +30,83 @@ export class MapaComponent implements OnInit, AfterViewInit {
 
   isReporting = false;
 
+  selectedCoords: { lat: number; lng: number } | null = null;
+
   private defaultIcon: google.maps.Icon = {
     url: 'https://maps.google.com/mapfiles/ms/icons/red-dot.png'
   };
 
-  // ✅ Ya NO hay marcadores por defecto
   markers: Marker[] = [];
 
   currentDate = '';
-  currentTemp = '17 °C';
+  currentTemp = '— °C';
   location = 'Estación - Universidad Tecnológica de Querétaro';
 
-  private currentWeatherState: WeatherState = 'rainy';
+  private currentWeatherState: WeatherState = 'sunny';
 
   private weatherDescriptions: Record<WeatherState, string> = {
-    night: 'Periodo de oscuridad, desde el atardecer hasta el amanecer.',
-    cloudy: 'Primeras horas del día, cielo parcialmente cubierto o neblina matutina.',
-    rainy: 'En muchas regiones, las lluvias se concentran cerca del mediodía.',
-    sunny: 'Horas más despejadas y cálidas antes del atardecer.'
+    night: 'Noche despejada, sin riesgo de lluvia.',
+    cloudy: 'Cielo parcialmente cubierto o neblina matutina.',
+    rainy: 'Lluvias moderadas, mantén precaución al conducir.',
+    sunny: 'Cielos despejados y temperaturas agradables.'
   };
 
   private backendUrl = 'http://localhost:5001';
-
   private http = inject(HttpClient);
 
   constructor(private router: Router) {}
 
   ngOnInit() {
     this.updateCurrentDate();
+    this.loadWeatherData();   
+    this.loadMarkers();
   }
 
   ngAfterViewInit() {
     this.initializeMap();
   }
 
+  // ---------------------------------------
+  //     CARGA DE REGISTROS.JSON (nuevo)
+  // ---------------------------------------
+
+  private loadWeatherData(): void {
+    this.http.get<any[]>('WeatheriaBackend/weatheria/registros.json').subscribe({
+      next: (data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          const registro = data[data.length - 1];
+
+          this.currentTemp = `${registro.temp} °C`;
+          this.currentWeatherState = this.getWeatherState(registro);
+        } else {
+          console.warn('registros.json vacío.');
+        }
+      },
+      error: (err) => console.error('Error cargando registros.json:', err)
+    });
+  }
+
+  private getWeatherState(registro: any): WeatherState {
+    const hora = new Date().getHours();
+
+    if (registro && typeof registro.precipRate === 'number' && registro.precipRate > 0.1) {
+      return 'rainy';
+    } else if (hora >= 20 || hora < 6) {
+      return 'night';
+    } else if (registro && typeof registro.humidity === 'number' && registro.humidity >= 75) {
+      return 'cloudy';
+    } else {
+      return 'sunny';
+    }
+  }
+
+  get currentDescription(): string {
+    return this.weatherDescriptions[this.currentWeatherState];
+  }
+
+
   private initializeMap() {
-    if (this.map && this.map.googleMap) {
+    if (this.map?.googleMap) {
       this.map.googleMap.setCenter(this.center);
       this.map.googleMap.setZoom(this.zoomLevel);
     }
@@ -73,7 +114,10 @@ export class MapaComponent implements OnInit, AfterViewInit {
 
   onMapClick(event: google.maps.MapMouseEvent) {
     if (event.latLng) {
-      this.addMarker(event.latLng.lat(), event.latLng.lng(), 'Siniestro reportado');
+      const lat = event.latLng.lat();
+      const lng = event.latLng.lng();
+      this.selectedCoords = { lat, lng };
+      this.addMarker(lat, lng, 'Siniestro reportado');
     }
   }
 
@@ -87,12 +131,37 @@ export class MapaComponent implements OnInit, AfterViewInit {
     };
 
     this.markers.push(newMarker);
-    console.log('Nuevo marcador:', newMarker);
 
     setTimeout(() => {
       this.map.googleMap?.setCenter({ lat, lng });
       this.map.googleMap?.setZoom(15);
     }, 50);
+  }
+
+  loadMarkers() {
+    this.http.get(`${this.backendUrl}/flood_history`).subscribe({
+      next: (response: any) => {
+        const reports = response.intData.data || [];
+        const now = new Date();
+        const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+        const validReports = reports.filter((r: any) => new Date(r.created_at) > cutoff);
+        const manualMarkers = this.markers.filter(m => m.icon.url.includes('red-dot'));
+
+        const reportMarkers = validReports
+          .filter((r: any) => r.lat != null && r.lng != null)
+          .map((r: any) => ({
+            id: r.id,
+            lat: r.lat,
+            lng: r.lng,
+            title: 'Inundación Reportada',
+            icon: { url: 'https://maps.google.com/mapfiles/ms/icons/blue-dot.png' }
+          }));
+
+        this.markers = [...manualMarkers, ...reportMarkers];
+      },
+      error: (err) => console.error('Error loading markers:', err)
+    });
   }
 
   reportFlood() {
@@ -103,39 +172,61 @@ export class MapaComponent implements OnInit, AfterViewInit {
       url: 'https://maps.google.com/mapfiles/ms/icons/blue-dot.png'
     };
 
+    if (this.selectedCoords) {
+      const { lat, lng } = this.selectedCoords;
+      const tempId = -Date.now();
+
+      this.markers.push({ id: tempId, lat, lng, title: 'Inundación Reportada', icon: floodIcon });
+      this.sendReport(`GPS: ${lat.toFixed(4)}, ${lng.toFixed(4)}`, tempId);
+      return;
+    }
+
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
-        this.addMarker(lat, lng, 'Inundación Reportada', floodIcon);
-        this.sendReport(`GPS: ${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+        const tempId = -Date.now();
+
+        this.markers.push({ id: tempId, lat, lng, title: 'Inundación Reportada', icon: floodIcon });
+        this.sendReport(`GPS: ${lat.toFixed(4)}, ${lng.toFixed(4)}`, tempId);
       },
-      () => {
-        this.addMarker(this.center.lat, this.center.lng, 'Inundación Reportada', floodIcon);
-        this.sendReport(this.location);
-      },
+      () => this.addFallbackMarker(floodIcon),
       { enableHighAccuracy: true, timeout: 8000 }
     );
   }
 
-  private sendReport(userLocation: string) {
+  private addFallbackMarker(icon: google.maps.Icon) {
+    const tempId = -Date.now();
+
+    this.markers.push({
+      id: tempId,
+      lat: this.center.lat,
+      lng: this.center.lng,
+      title: 'Inundación Reportada',
+      icon
+    });
+
+    this.sendReport(this.location, tempId);
+  }
+
+  private sendReport(userLocation: string, tempId?: number) {
     const payload = {
+      mensaje: 'Se ha reportado una posible inundación desde el mapa.',
       ubicacion: userLocation,
       fecha: this.currentDate,
       temperatura: this.currentTemp,
-      descripcion_clima: this.weatherDescriptions[this.currentWeatherState],
-      mensaje: 'Se ha reportado una posible inundación desde el mapa.'
+      descripcion_clima: this.currentDescription
     };
-
-    console.log('Enviando reporte:', payload);
 
     this.http.post(`${this.backendUrl}/report_flood`, payload).subscribe({
       next: () => {
-        alert('✅ Reporte enviado. La compañía ha sido notificada por correo.');
+        alert('Reporte enviado.');
+        if (tempId && tempId < 0) {
+          this.markers = this.markers.filter(m => m.id !== tempId);
+          this.loadMarkers();
+        }
       },
-      error: () => {
-        alert('❌ No se pudo enviar el correo. Verifica el servidor.');
-      },
+      error: () => alert('No se pudo enviar el correo.'),
       complete: () => (this.isReporting = false)
     });
   }
@@ -155,7 +246,12 @@ export class MapaComponent implements OnInit, AfterViewInit {
   }
 
   private updateCurrentDate() {
-    const now = new Date(2025, 10, 8);
-    this.currentDate = now.toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const now = new Date();
+    this.currentDate = now.toLocaleDateString('es-ES', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
   }
 }
